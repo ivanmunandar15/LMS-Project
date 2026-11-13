@@ -1,0 +1,97 @@
+# Letakkan folder ini sejajar dengan lab-equipment-api/ dan lab-management/:
+#   ├── lab-deploy/            <- jalankan perintah docker compose dari sini
+#   ├── lab-equipment-api/
+#   └── lab-management/
+# Pakai:  cp .env.example .env  (isi semua nilai)  &&  docker compose up -d --build
+name: lab
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lab
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?isi POSTGRES_PASSWORD di .env}
+      POSTGRES_DB: lab_equipment
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lab -d lab_equipment"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Tidak ada `ports`: database hanya bisa dijangkau container lain.
+
+  api:
+    build: ../lab-equipment-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATABASE_URL: postgresql://lab:${POSTGRES_PASSWORD}@postgres:5432/lab_equipment?schema=public
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?isi JWT_ACCESS_SECRET di .env}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?isi JWT_REFRESH_SECRET di .env}
+      JWT_ACCESS_EXPIRES_IN: 15m
+      JWT_REFRESH_EXPIRES_IN: 7d
+      COOKIE_SAME_SITE: lax
+      CORS_ORIGIN: ${PUBLIC_URL:?isi PUBLIC_URL di .env}
+      APP_URL: ${PUBLIC_URL}
+      FRONTEND_URL: ${PUBLIC_URL}
+      UPLOAD_DIR: /data/uploads
+      ROOM_CAPACITY_MODE: block
+      JOBS_ENABLED: "true" # job terjadwal: JANGAN jalankan lebih dari 1 replika api
+      JOBS_TIMEZONE: Asia/Jakarta
+      EMAIL_ENABLED: ${EMAIL_ENABLED:-false}
+      SMTP_HOST: ${SMTP_HOST:-localhost}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      MAIL_FROM: ${MAIL_FROM:-Lab Equipment <no-reply@lab.local>}
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "3000"
+    # Tidak dipublikasikan ke host. Untuk perangkat IoT, buka jalurnya lewat Caddyfile (lihat komentar di sana).
+
+  web:
+    build:
+      context: ../lab-management
+      args:
+        NEXT_PUBLIC_APP_URL: ${PUBLIC_URL}
+    restart: unless-stopped
+    environment:
+      API_URL: http://api:3000/api/v1
+      AUTH_SECRET: ${AUTH_SECRET:?isi AUTH_SECRET di .env}
+      AUTH_TRUST_HOST: "true"
+      AUTH_URL: ${PUBLIC_URL}
+    depends_on:
+      api:
+        condition: service_healthy
+    expose:
+      - "3001"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?isi SITE_ADDRESS di .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  uploads:
+  caddy_data:
+  caddy_config:
